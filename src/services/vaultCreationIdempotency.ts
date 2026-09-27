@@ -226,7 +226,7 @@ async function completeDurably<T>(
   if (result.rowCount !== 1) throw new Error('Idempotency reservation was not completed')
 }
 
-export async function createVaultIdempotently<T>(
+export async function createVaultIdempotently<V extends { id: string }, T>(
   options: CoordinatorOptions,
   actions: IdempotencyActions<V, T>,
   poolOverride?: Pool | null,
@@ -245,7 +245,7 @@ export async function createVaultIdempotently<T>(
 
   if (!claim.claimed) {
     return {
-      vault: { id: claim.vaultId } as PersistedVault,
+      vault: { id: claim.vaultId } as unknown as V,
       response: parseResponse<T>(claim.response),
       replayed: true,
     }
@@ -254,13 +254,14 @@ export async function createVaultIdempotently<T>(
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
-    const created = await create(client)
-    await completeDurably(client, options.key, created.vault, created.response, now())
+    const vault = await actions.createVault(client)
+    const response = await actions.buildResponse(vault)
+    await completeDurably(client, options.key, vault as unknown as PersistedVault, response, now())
     await client.query('COMMIT')
-    return { ...created, replayed: false }
+    return { vault, response, replayed: false }
   } catch (error) {
     await client.query('ROLLBACK').catch(() => undefined)
-    
+
     // Attempt to clear the pending claim so the user doesn't have to wait for TTL to retry
     const cleanupClient = await pool.connect()
     try {
@@ -275,24 +276,8 @@ export async function createVaultIdempotently<T>(
     }
     throw error
   } finally {
-    client1.release()
+    client.release()
   }
-
-  const response = await actions.buildResponse(vault)
-
-  const client2 = await pool.connect()
-  try {
-    await client2.query('BEGIN')
-    await completeDurably(client2, options.key, vault as any, response, now())
-    await client2.query('COMMIT')
-  } catch (error) {
-    await client2.query('ROLLBACK').catch(() => undefined)
-    throw error
-  } finally {
-    client2.release()
-  }
-  
-  return { vault, response, replayed: false }
 }
 
 /** Test-only cleanup for the no-database fallback. */

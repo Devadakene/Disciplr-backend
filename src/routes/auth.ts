@@ -7,9 +7,10 @@ import { authenticate } from '../middleware/auth.js'
 import { revokeSession, revokeAllUserSessions } from '../services/session.js'
 import { requireStepUp } from '../middleware/stepUp.js'
 import { requireJson } from '../middleware/requireJson.js'
-import { AUTHJSON_MAX_BYTES } from '../middleware/requestBodyLimits.js'
+import { AUTH_JSON_MAX_BYTES } from '../middleware/requestBodyLimits.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { prisma } from '../lib/prisma.js'
+import type { Prisma } from '@prisma/client'
 import { UserRole } from '../types/user.js'
 import { requestTelemetry } from '../middleware/telemetry.js'
 import { authRateLimiter } from '../middleware/rateLimiter.js'
@@ -68,7 +69,7 @@ const formatAuthUser = (user: { id: string; role: string; lastLoginAt: Date | nu
  ({
   id: user.id,
   role: user.role as UserRole,
-  lastLoginAt: user.lastLoginAt?.toISString() ?? null,
+  lastLoginAt: user.lastLoginAt?.toISOString() ?? null,
 })
 
 const PRISMA_RECORD_NOT_FOUND = 'P2025'
@@ -88,7 +89,7 @@ authRouter.post('/register', authJson, authRateLimiter, async (req, res, next) =
     }
 
     try {
-        const user = authService.register(result.data)
+        const user = AuthService.register(result.data)
         res.status(201).json(user)
     } catch (error) {
         const message = error instanceof Error ? error.message : 'Registration failed'
@@ -260,7 +261,7 @@ authRouter.post('/users/:id/role', requireJson, authenticate, requireStepUp(), a
   const targetUserId = paramsResult.data.id
   const nextRole = bodyResult.data.role
 
-  const outcome = await prisma.$transaction(async (tx) => {
+  const outcome = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
     const existing = await tx.user.findUnique({
       where: { id: targetUserId },
       select: authUserSelect,

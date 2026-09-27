@@ -764,7 +764,7 @@ export const getMilestoneApprovalProgress = async (
   if (safeTotal !== undefined) {
     const remaining = safeTotal - totalVoted
     const maxPossibleApprovals = approved + Math.max(remaining, 0)
-    isRejected = maxPossibleApprovals < safeThreshold
+    isRejected = maxPossibleApprovals < approvalThreshold
   } else {
     // Legacy: any rejection vetoes
     isRejected = rejected > 0
@@ -776,8 +776,8 @@ export const getMilestoneApprovalProgress = async (
     approved,
     rejected,
     pending,
-    required: safeThreshold,
-    isComplete: approved >= safeThreshold && !isRejected,
+    required: approvalThreshold,
+    isComplete: approved >= approvalThreshold && !isRejected,
     isRejected,
     approvalPercentage,
   }

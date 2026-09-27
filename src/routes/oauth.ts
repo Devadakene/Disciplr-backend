@@ -9,7 +9,6 @@ import { authRateLimiter } from '../middleware/rateLimiter.js'
 import { getEnv } from '../config/index.js'
 import type { ApiScope } from '../types/auth.js'
 import { requestTelemetry } from '../middleware/telemetry.js'
-import { requireJson } from '../middleware/requireJson.js'
 
 export const oauthRouter = Router()
 oauthRouter.use(requestTelemetry);
@@ -19,6 +18,15 @@ const MAX_SCOPES_PER_REQUEST = 20
 const MAX_SCOPE_LENGTH = 64
 
 const oauthJson = requireJson({ maxBytes: 16384 })
+
+const NETWORK_ID: string | undefined = process.env.STELLAR_NETWORK_ID || process.env.NETWORK_ID || undefined
+
+const oauthTokenRequestSchema = z.object({
+  grant_type: z.literal('client_credentials'),
+  client_id: z.string().min(1),
+  client_secret: z.string().min(1),
+  scope: z.string().optional(),
+})
 
 /** Non-blocking audit log helper — failures are logged but never propagate. */
 const auditLog = (entry: Parameters<typeof createAuditLog>[0]): void => {
@@ -37,21 +45,19 @@ const oauthError = (res: Response, status: number, error: string, description: s
 }
 
 oauthRouter.post('/token', oauthJson, authRateLimiter, async (req: Request, res: Response): Promise<void> => {
-  const { grant_type, client_id, client_secret, scope } = req.body ?? {}
-
   // RFC 6749 §5.2 — an unsupported/missing grant_type is reported distinctly.
-  if (rawBody.grant_type !== 'client_credentials') {
+  if (req.body?.grant_type !== 'client_credentials') {
     oauthError(res, 400, 'unsupported_grant_type', 'Only client_credentials is supported')
     return
   }
 
-  const parsed = oauthTokenRequestSchema.safeParse(body)
+  const parsed = oauthTokenRequestSchema.safeParse(req.body)
   if (!parsed.success) {
     auditLog({
-      actor_user_id: String(rawBody.client_id ?? 'unknown'),
+      actor_user_id: String(req.body?.client_id ?? 'unknown'),
       action: 'oauth.token_denied',
       target_type: 'oauth_client',
-      target_id: String(rawBody.client_id ?? 'unknown'),
+      target_id: String(req.body?.client_id ?? 'unknown'),
       metadata: { reason: 'invalid_request', grant_type: 'client_credentials' },
     })
     oauthError(res, 400, 'invalid_request', 'Malformed token request')

@@ -183,11 +183,11 @@ export const transitionMilestone = (
 
   if (!(to in LIFECYCLE_ORDER)) return { success: false, error: `Unknown lifecycle state: ${String(to)}` }
 
-  const from: MilestoneLifecycleState = lifecycleState[id] ?? 'created'
+  const from: MilestoneLifecycleState = lifecycleState[id] ?? 'submitted'
 
   // Submission is created by the vault workflow, not a verifier queue action.
   // Authorization begins when a verifier changes the submitted item.
-  if (opts?.actor !== undefined && to !== 'submitted') {
+  if (opts?.actor !== undefined && to !== 'submitted' && to !== 'created') {
     const action = to === 'settled' ? 'approve' : 'validate'
     // A replay must be acknowledged before checking the now-advanced state.
     if (!opts.idempotencyKey || !appliedIdempotencyKeys[id]?.has(opts.idempotencyKey)) {

@@ -6,7 +6,7 @@ import {
   type QueueDepthReport,
   type SweepResult,
 } from './queue.js'
-import { type EnqueueOptions, type JobPayloadByType, type JobType } from './types.js'
+import { type EnqueueOptions, type JobPayloadByType, type JobType, type JobHandler } from './types.js'
 import { recoverPendingExportJobs } from '../services/exportQueue.js'
 import { listOrganizations } from '../services/organization.js'
 import {
@@ -231,7 +231,9 @@ export class BackgroundJobSystem {
       if (!handler) {
         throw new Error(`Missing handler for job type: ${jobType}`)
       }
-      this.queue.registerHandler(jobType, handler)
+      // Cast needed: iterating a union-typed array loses the per-type
+      // correlation between jobType T and handler JobHandler<T>.
+      this.queue.registerHandler(jobType as JobType, handler as JobHandler)
     }
   }
 

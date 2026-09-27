@@ -1,4 +1,4 @@
-import { Router } from 'express'
+import { Router, type Request, type Response, type NextFunction } from 'express'
 import express from 'express'
 import { z } from 'zod'
 import { authenticate } from '../middleware/auth.js'
@@ -17,6 +17,22 @@ import { formatValidationError } from '../lib/validation.js'
 import { createAuditLog } from '../lib/audit-logs.js'
 import { ApiScope } from '../types/auth.js'
 import db from '../db/index.js'
+
+// Org helpers — replace with real service imports when the org module exists
+async function getOrgById(orgId: string): Promise<{ id: string } | null> {
+  return db('organizations').where({ id: orgId }).first().then((row: unknown) => row as { id: string } | null).catch(() => null)
+}
+async function getOrgMembership(orgId: string, userId: string): Promise<{ orgId: string; userId: string } | null> {
+  return db('org_members').where({ org_id: orgId, user_id: userId }).first().then((row: unknown) => row as { orgId: string; userId: string } | null).catch(() => null)
+}
+
+const apiKeyIdParamSchema = z.object({
+  id: z.string().uuid('id must be a valid UUID'),
+})
+
+const orgIdParamSchema = z.object({
+  orgId: z.string().uuid('orgId must be a valid UUID'),
+})
 
 export const apiKeysRouter = Router()
 
@@ -94,7 +110,7 @@ apiKeysRouter.post('/', apiKeysJson, apiKeyRateLimiter, async (req, res, next) =
     userId,
     orgId,
     label,
-    scopes,
+    scopes: scopes as ApiScope[],
   })
 
   const { keyHash: _keyHash, ...publicRecord } = record
@@ -165,7 +181,7 @@ apiKeysRouter.post('/:id/revoke', apiKeyRateLimiter, requireStepUp(), async (req
 })
 
 export const getApiKeyUsageHandler = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-  const paramsResult = orgIdParamSchema.safeParse(req.params ?? {})
+  const paramsResult = orgIdParamSchema.safeParse((req as any).params ?? {})
   if (!paramsResult.success) {
     res.status(400).json(formatValidationError(paramsResult.error))
     return
