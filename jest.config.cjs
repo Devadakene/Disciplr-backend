@@ -70,6 +70,7 @@ module.exports = {
     "<rootDir>/src/tests/sorobanEnv.test.ts",
     "<rootDir>/src/tests/vaultExpiry.digest.test.ts",
     "<rootDir>/src/tests/webhookVerify.test.ts",
+    "<rootDir>/src/routes/oauth.test.ts",
     // Legacy suites currently target removed routes, old response contracts,
     // or Vitest-only mocks. Keep the blocking Jest run focused on the suites
     // that match the shipped application contract.
