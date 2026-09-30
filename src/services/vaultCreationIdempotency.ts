@@ -279,6 +279,19 @@ export async function createVaultIdempotently<V extends { id: string }, T>(
     await client1.query('COMMIT')
   } catch (error) {
     await client1.query('ROLLBACK').catch(() => undefined)
+    
+    // Attempt to clear the pending claim so the user doesn't have to wait for TTL to retry
+    const cleanupClient = await pool.connect()
+    try {
+      await cleanupClient.query(
+        `DELETE FROM vault_creation_idempotency WHERE idempotency_key = $1 AND state = 'pending'`,
+        [options.key]
+      )
+    } catch(e) {
+      // Ignore cleanup errors
+    } finally {
+      cleanupClient.release()
+    }
     throw error
   } finally {
     client1.release()

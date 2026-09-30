@@ -2,6 +2,29 @@ import { Router, Request, Response, NextFunction } from 'express'
 import { authenticate } from '../middleware/auth.js'
 
 import { requireUser, requireVerifier } from '../middleware/rbac.js'
+import { UserRole } from '../types/user.js'
+import {
+  parseMilestoneInput,
+  flattenZodErrors,
+} from '../services/vaultValidation.js'
+
+import {
+  createMilestoneWithThreshold,
+  getMilestonesByVaultId,
+  getMilestoneById,
+  verifyMilestone,
+  validateMilestone,
+  validateMilestoneMultiVerifier,
+  addMilestoneEvent,
+  allMilestonesVerified,
+  allMilestonesMetThreshold,
+} from '../services/milestones.js'
+
+import { transitionVaultStatus } from '../services/vaultTransitions.js'
+import { getVaultById } from '../services/vaultStore.js'
+import { AppError } from '../middleware/errorHandler.js'
+import db from '../db/index.js'
+import { MilestoneRepositoryEnhanced } from '../repositories/milestoneRepositoryEnhanced.js'
 import {
   parseMilestoneInput,
   flattenZodErrors,
@@ -21,7 +44,7 @@ import {
   DuplicateVerifierVoteError,
   getVerifierProfile,
 } from '../services/verifiers.js'
-import type { MilestoneStatus } from '../types/milestone.js'
+import { VerifierAuthorizationError } from '../services/verifierTransitions.js'
 
 const milestoneRepo = new MilestoneRepositoryEnhanced(db)
 
@@ -187,9 +210,12 @@ milestonesRouter.post('/', authenticate, requireWalletIdentity, requireUser, req
       throw AppError.notFound('Vault not found')
     }
     
-    // Explicit authorization check to ensure the caller actually owns this vault
-    const isOwner = (owner.userId && vault.ownerId === owner.userId) || 
-                    (owner.orgId && vault.organizationId === owner.orgId);
+    // Explicit authorization check to ensure the caller actually owns this vault.
+    // Mirrors the vaults route: the vault creator, an org-scoped principal whose
+    // org matches the vault's org, or an admin may manage the vault's milestones.
+    const isOwner = (owner.userId && vault.creator === owner.userId) ||
+                    (owner.orgId && vault.orgId === owner.orgId) ||
+                    req.user?.role === UserRole.ADMIN;
                     
     if (!isOwner) {
       throw AppError.forbidden('Unauthorized: you do not own this vault')
@@ -232,9 +258,22 @@ milestonesRouter.get('/', authenticate, requireValidVaultId, async (req: Request
     return next(AppError.notFound('Vault not found'))
   }
 
+  const defaultLimit = 20
+  const maxLimit = 100
+  const limitRaw = req.query.limit
+  const offsetRaw = req.query.offset
+  const limit = Math.min(Math.max(typeof limitRaw === 'string' ? parseInt(limitRaw, 10) || defaultLimit : defaultLimit, 1), maxLimit)
+  const offset = Math.max(typeof offsetRaw === 'string' ? parseInt(offsetRaw, 10) || 0 : 0, 0)
+
   const milestones = await milestoneRepo.listByVault(vaultId)
+  const totalCount = milestones.length
+
+  res.setHeader('X-Total-Count', String(totalCount))
+  res.setHeader('Cache-Control', 'private, max-age=30')
+
+  const pagedMilestones = milestones.slice(offset, offset + limit)
   res.json({
-    milestones: milestones.map((m) => ({
+    milestones: pagedMilestones.map((m) => ({
       id: m.id,
       vaultId: m.vault_id,
       title: m.title,
@@ -272,7 +311,17 @@ milestonesRouter.patch('/:id/verify', authenticate, requireWalletIdentity, requi
       throw AppError.notFound('Milestone not found')
     }
 
-    const verified = verifyMilestone(id)
+    let verified
+    try {
+      verified = verifyMilestone(id, actorUserId)
+    } catch (error) {
+      if (error instanceof VerifierAuthorizationError) {
+        throw error.code === 'ALREADY_SETTLED'
+          ? AppError.conflict(error.message)
+          : AppError.forbidden(error.message)
+      }
+      throw error
+    }
     if (!verified) {
       throw AppError.notFound('Milestone not found')
     }
@@ -334,7 +383,10 @@ milestonesRouter.post('/:id/validate', authenticate, requireWalletIdentity, requ
       if (result.error === 'Milestone already validated') {
         throw AppError.conflict('Milestone already validated')
       }
-      if (result.error === 'Unauthorized: only assigned verifier can validate') {
+      if (/already settled|already validated/i.test(result.error ?? '')) {
+        throw AppError.conflict(result.error!)
+      }
+      if (/assigned verifier|not assigned/i.test(result.error ?? '')) {
         throw AppError.forbidden('Unauthorized: only assigned verifier can validate')
       }
       throw AppError.badRequest(result.error!)
@@ -398,6 +450,15 @@ milestonesRouter.post('/:id/approve', authenticate, requireWalletIdentity, requi
         throw AppError.forbidden('Only approved verifiers may cast milestone approvals')
       }
 
+      const authorization = validateMilestoneMultiVerifier(
+        id,
+        verifierUserId,
+        verifier?.status,
+      )
+      if (!authorization.success) {
+        throw AppError.forbidden(authorization.error ?? 'Verifier is not authorized for this queue item')
+      }
+
       // Check if verifier has already voted (duplicate vote prevention)
       const hasVoted = await hasVerifierVoted(id, verifierUserId)
 
@@ -417,6 +478,14 @@ milestonesRouter.post('/:id/approve', authenticate, requireWalletIdentity, requi
       // Record the approval
       const approval = await recordMilestoneApproval(id, verifierUserId, approvalStatus as any)
 
+      addMilestoneEvent({
+        userId: verifierUserId,
+        vaultId,
+        name: 'milestone.approval.recorded',
+        status: 'success',
+        timestamp: new Date().toISOString(),
+      })
+
       // Get updated approval progress
       const approvalProgress = await getMilestoneApprovalProgress(id, approvalThreshold, totalVerifiers)
 
@@ -429,6 +498,14 @@ milestonesRouter.post('/:id/approve', authenticate, requireWalletIdentity, requi
         milestone.verified = true
         milestone.verifiedAt = new Date().toISOString()
         milestone.verifiedBy = verifierUserId
+
+        addMilestoneEvent({
+          userId: verifierUserId,
+          vaultId,
+          name: 'milestone.settled',
+          status: 'success',
+          timestamp: milestone.verifiedAt,
+        })
 
         // Build approval/rejection counts for veto-aware vault check
         const vaultMilestones = getMilestonesByVaultId(vaultId)
