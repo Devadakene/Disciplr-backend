@@ -118,16 +118,16 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
         
         result.columns = {}
 
-        for (const [section, cols] of Object.entries(colsParse.data)) {
+        for (const [section, cols] of Object.entries(colsParse.data) as [string, string[]][]) {
           const allowed = ALLOWED_COLUMNS[section as keyof typeof ALLOWED_COLUMNS]
           if (!allowed) {
             return null
           }
 
-          if (!cols.every(col => allowed.includes(col))) {
+          if (!cols.every((col: string) => allowed.includes(col))) {
             return null
           }
-          result.columns[section as keyof typeof ALLOWED_COLUMNS] = cols
+          result.columns[section as keyof typeof ALLOWED_COLUMNS] = cols as string[]
         }
       } catch {
         return null
