@@ -27,6 +27,9 @@ const mockTransitionVerifier = jest.fn()
 const mockCreateVerifierProfile = jest.fn()
 const mockGetVerifierProfile = jest.fn()
 const mockGetVerifierStats = jest.fn()
+const mockGetVerifierStatsBatch = jest.fn(async (userIds: string[]) =>
+  new Map(await Promise.all(userIds.map(async (id) => [id, await mockGetVerifierStats(id)] as const))),
+)
 const mockListVerifierProfiles = jest.fn()
 const mockUpdateVerifierProfile = jest.fn()
 const mockDeleteVerifierProfile = jest.fn()
@@ -37,6 +40,7 @@ jest.unstable_mockModule('../services/verifiers.js', () => ({
   createVerifierProfile: mockCreateVerifierProfile,
   getVerifierProfile: mockGetVerifierProfile,
   getVerifierStats: mockGetVerifierStats,
+  getVerifierStatsBatch: mockGetVerifierStatsBatch,
   listVerifierProfiles: mockListVerifierProfiles,
   updateVerifierProfile: mockUpdateVerifierProfile,
   deleteVerifierProfile: mockDeleteVerifierProfile,
