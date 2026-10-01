@@ -12,7 +12,7 @@ import {
 import { createHandler } from 'graphql-http/lib/use/express'
 import depthLimit from 'graphql-depth-limit'
 import DataLoader from 'dataloader'
-import { requireOrgAccess } from '../middleware/orgAyth.js'
+import { requireOrgAccess } from '../middleware/orgAuth.js'
 import { getVaultById, listVaultsByOrg, listVaultIdsByOrg } from '../services/vaultStore.js'
 import { getAnalyticsByPeriod } from '../services/analytics.service.js'
 import { listVerifications, VerificationRecord } from '../services/verifiers.js'

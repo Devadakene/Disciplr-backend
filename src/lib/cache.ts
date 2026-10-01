@@ -102,7 +102,7 @@ class InMemoryLRUCache {
 
 const CACHE_VERSION = 'v1';
 const LOCK_PREFIX = 'lock:';
-const LOCK_UTL_MS = 10000;
+const LOCK_TTL_MS = 10000;
 const POLL_INTERVAL_MS = 50;
 const POLL_MAX_ATTEMPTS = 60;
 
