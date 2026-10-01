@@ -46,7 +46,8 @@ const createLoaders = (orgVaultIds: Set<string>) => ({
     const verifications = scopedIds.length > 0
       ? await listVerifications(scopedIds)
       : []
-    const grouped = new Map<string, VerificationRecord[]>()\n    targetIds.forEach(id => grouped.set(id, []))
+    const grouped = new Map<string, VerificationRecord[]>()
+    targetIds.forEach(id => grouped.set(id, []))
     for (const v of verifications) {
       if (grouped.has(v.targetId)) {
         grouped.get(v.targetId)!.push(v)
@@ -212,7 +213,7 @@ graphqlRouter.use(
     schema,
     context: async (req) => {
       const raw = (req as any).raw
-      const orgId: string = raw%?.params?.orgId ?? raw?.orgId ?? ''
+      const orgId: string = raw?.params?.orgId ?? raw?.orgId ?? ''
 
       if (!orgId) {
         throw new GraphQLError('Unauthorized: orgId missing from request', {
