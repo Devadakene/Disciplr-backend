@@ -11,19 +11,6 @@ interface CustomWebhookRequest extends Request {
   rawBody?: string
 }
 
-/** Outcome labels for inbound verification telemetry (no sensitive material). */
-export type WebhookVerifyOutcome =
-  | 'success'
-  | 'no_secret'
-  | 'missing_headers'
-  | 'invalid_timestamp'
-  | 'outside_window'
-  | 'replay'
-  | 'payload_too_large'
-  | 'invalid_json'
-  | 'body_read_error'
-  | 'bad_signature'
-
 // ---------------------------------------------------------------------------
 // Inbound payload boundary
 //
