@@ -807,6 +807,11 @@ export const getMilestoneApprovalProgress = async (
       ? Math.max(1, Math.floor(Number(totalVerifiers)))
       : undefined
 
+  // The threshold is validated as a positive integer by the caller; clamp it
+  // defensively anyway so malformed input can never produce NaN/degenerate
+  // comparisons in the veto math below.
+  const safeThreshold = Math.max(1, Math.floor(Number(approvalThreshold)))
+
   // Veto math: can we still reach threshold?
   let isRejected: boolean
   if (safeTotal !== undefined) {

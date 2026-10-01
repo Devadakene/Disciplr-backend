@@ -110,7 +110,7 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
           ? JSON.parse(columnsParam)
           : columnsParam
         
-        const ColumnsSchema = z.record(z.array(z.string()))
+        const ColumnsSchema = z.record(z.string(), z.array(z.string()))
         const colsParse = ColumnsSchema.safeParse(parsedColumns)
         if (!colsParse.success) {
           return null

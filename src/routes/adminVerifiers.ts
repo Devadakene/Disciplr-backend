@@ -762,24 +762,46 @@ const createOrGetAndTransitionStatus = async (
 
       return
     }
+
+    // The profile already exists: apply the status transition. The in-flight
+    // guard stays held until the transition settles.
+    await transitionStatus(req, res, userId, status)
   } catch (error) {
-    if (isDuplicateError(error)) {
-      // Fallthrough to transition if created concurrently
-    } else {
+    if (error instanceof InvalidVerifierStatusTransitionError) {
       emitDiagnostic({
-        level: 'error',
+        level: 'warn',
         action: 'verifier.transition',
         requestId,
         actorUserId: req.user!.userId,
         targetUserId: userId,
-        outcome: 'error',
-        errorCode: 'INTERNAL_ERROR',
-        toStatus: status,
+        outcome: 'invalid_transition',
+        errorCode: 'INVALID_TRANSITION',
+        fromStatus: error.from,
+        toStatus: error.to,
       })
-
-      res.status(500).json({ error: 'internal server error' })
+      res.setHeader('X-Request-Id', requestId)
+      res.status(409).json({ error: error.message })
       return
     }
+
+    if (isDuplicateError(error)) {
+      // Lost the create race at the storage layer: retry as a transition.
+      await transitionStatus(req, res, userId, status)
+      return
+    }
+
+    emitDiagnostic({
+      level: 'error',
+      action: 'verifier.transition',
+      requestId,
+      actorUserId: req.user!.userId,
+      targetUserId: userId,
+      outcome: 'error',
+      errorCode: 'INTERNAL_ERROR',
+      toStatus: status,
+    })
+    res.setHeader('X-Request-Id', requestId)
+    res.status(500).json({ error: 'internal server error' })
   } finally {
     inFlightTransitions.delete(userId)
   }

@@ -483,11 +483,14 @@ describe('#1529 adminVerifiers — concurrent in-flight transition guard', () =>
 
     mockTransitionVerifier.mockImplementationOnce(() => firstCallPromise)
 
-    // Launch first request without awaiting it
+    // Launch first request without awaiting it. supertest dispatches a request
+    // lazily (on the first attached promise handler), so attach one to make
+    // sure the first request is genuinely in flight before the second starts.
     const first = request(app)
       .post('/api/admin/verifiers/target-user/approve')
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ reason: 'first' })
+    const firstResponse = first.then((response) => response)
 
     // Give the event loop a tick so the first request can enter the handler
     await new Promise((r) => setImmediate(r))
@@ -507,7 +510,7 @@ describe('#1529 adminVerifiers — concurrent in-flight transition guard', () =>
       changedFields: ['status'],
       auditLog: { id: 'audit-8' },
     })
-    await first
+    await firstResponse
   })
 
   it('allows a subsequent transition after the in-flight request completes', async () => {
