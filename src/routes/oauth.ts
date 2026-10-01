@@ -12,7 +12,6 @@ import { requestTelemetry } from '../middleware/telemetry.js'
 import { getNetworkId } from '../middleware/oauthBearer.js'
 
 export const oauthRouter = Router()
-oauthRouter.use(requestTelemetry);
 
 const DEFAULT_TOKEN_TTL_SECONDS = 3600
 const MIN_TOKEN_TTL_SECONDS = 60
@@ -60,6 +59,44 @@ export const oauthTokenRequestSchema = z.object({
 })
 
 const oauthJson = requireJson({ maxBytes: 16384 })
+
+/**
+ * Retrieve the JWT secret from validated configuration.
+ * Fails closed in production if the secret is unset or matches known insecure default sentinels.
+ */
+export const getOAuthJwtSecret = (): string => {
+  let secret: string | undefined
+  try {
+    secret = getEnv().JWT_SECRET
+  } catch {
+    secret = process.env.JWT_SECRET
+  }
+
+  const isProduction =
+    process.env.NODE_ENV === 'production' ||
+    (() => {
+      try {
+        return getEnv().NODE_ENV === 'production'
+      } catch {
+        return false
+      }
+    })()
+
+  if (
+    isProduction &&
+    (!secret ||
+      secret === 'change-me-in-production-long-secret' ||
+      secret === 'change-me-in-production')
+  ) {
+    throw new Error('JWT_SECRET is unset or using an insecure default value in production')
+  }
+
+  if (!secret) {
+    throw new Error('JWT_SECRET is not configured')
+  }
+
+  return secret
+}
 
 /** Non-blocking audit log helper — failures are logged but never propagate. */
 const auditLog = (entry: Parameters<typeof createAuditLog>[0]): void => {
@@ -175,22 +212,47 @@ oauthRouter.post('/token', oauthJson, authRateLimiter, async (req: Request, res:
       return
     }
 
-    const unknown = requested.filter((s) => !clientScopes.includes(s))
-    if (unknown.length > 0) {
-      auditLog({
-        actor_user_id: canonicalClientId,
-        action: 'oauth.token_denied',
-        target_type: 'oauth_client',
-        target_id: canonicalClientId,
-        metadata: { reason: 'scope_exceeded', requested_scopes: requested, client_scopes: clientScopes },
-      })
-      oauthError(res, 400, 'invalid_scope', `Requested scope(s) exceed client grants: ${unknown.join(' ')}`)
-      return
-    }
+    if (requested.length === 0) {
+      // RFC 6749 §4.4.3 — an empty/whitespace-only scope request means "no
+      // specific scopes requested", so the full client grant applies.
+      grantedScopes = clientScopes
+    } else {
+      // Deduplicate before comparison so duplicate scope strings cannot be used
+      // to bypass capabilities or pollute the minted token.
+      const unique = Array.from(new Set(requested))
 
-    grantedScopes = requested
+      const unknown = unique.filter((s) => !clientScopes.includes(s))
+      if (unknown.length > 0) {
+        auditLog({
+          actor_user_id: canonicalClientId,
+          action: 'oauth.token_denied',
+          target_type: 'oauth_client',
+          target_id: canonicalClientId,
+          metadata: { reason: 'scope_exceeded', requested_scopes: unique, client_scopes: clientScopes },
+        })
+        oauthError(res, 400, 'invalid_scope', `Requested scope(s) exceed client grants: ${unknown.join(' ')}`)
+        return
+      }
+
+      grantedScopes = unique
+    }
   } else {
     grantedScopes = clientScopes
+  }
+
+  let jwtSecret: string
+  try {
+    jwtSecret = getOAuthJwtSecret()
+  } catch (err) {
+    auditLog({
+      actor_user_id: canonicalClientId,
+      action: 'oauth.token_denied',
+      target_type: 'oauth_client',
+      target_id: canonicalClientId,
+      metadata: { reason: 'insecure_jwt_secret', error: (err as Error).message },
+    })
+    oauthError(res, 500, 'server_error', 'OAuth token service is unavailable due to insecure secret configuration')
+    return
   }
 
   const now = Math.floor(Date.now() / 1000)
@@ -210,7 +272,7 @@ oauthRouter.post('/token', oauthJson, authRateLimiter, async (req: Request, res:
     ...(networkId && { net: networkId }),
   }
 
-  const accessToken = jwt.sign(payload, getEnv().JWT_SECRET)
+  const accessToken = jwt.sign(payload, jwtSecret)
 
   auditLog({
     actor_user_id: result.context.userId ?? canonicalClientId,
