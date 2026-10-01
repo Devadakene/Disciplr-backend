@@ -8,18 +8,25 @@ import { requireJson } from '../middleware/requireJson.js'
 import { authRateLimiter } from '../middleware/rateLimiter.js'
 import { getEnv } from '../config/index.js'
 import type { ApiScope } from '../types/auth.js'
+import { requestTelemetry } from '../middleware/telemetry.js'
+import { getNetworkId } from '../middleware/oauthBearer.js'
+
 export const oauthRouter = Router()
 
 const DEFAULT_TOKEN_TTL_SECONDS = 3600
 const MIN_TOKEN_TTL_SECONDS = 60
-const MAX_TOKEN_TTL_SECONDS = 12 * 60 * 60 // 12-hour ceiling on access tokens
+const MAX_TOKEN_TTL_SECONDS = 12 * 60 * 60
+const MAX_SCOPES_PER_REQUEST = 20
+const MAX_SCOPE_LENGTH = 64
+/** Upper bound for the raw `scope` string, rejected as a malformed request. */
+const MAX_REQUESTED_SCOPE_CHARS = 256
 
 /**
- * Resolve the OAuth access-token lifetime from configuration.
+ * Resolve how long an issued access token lives, in seconds.
  *
- * Falls back to 1 hour when the value is missing, unparsable, or outside the
- * enforceable [60s, 12h] window so a hostile/misconfigured deployment can never
- * mint unbounded-lifetime tokens.
+ * OAUTH_TOKEN_TTL_SECONDS is operator-supplied, so anything that is not an
+ * integer inside [MIN, MAX] falls back to the 1 hour default rather than
+ * silently minting a token with an unintended (possibly indefinite) lifetime.
  */
 export const resolveTokenTtlSeconds = (): number => {
   const raw = process.env.OAUTH_TOKEN_TTL_SECONDS
@@ -28,61 +35,30 @@ export const resolveTokenTtlSeconds = (): number => {
   }
 
   const parsed = Number(raw)
-  if (
-    !Number.isInteger(parsed) ||
-    parsed < MIN_TOKEN_TTL_SECONDS ||
-    parsed > MAX_TOKEN_TTL_SECONDS
-  ) {
+  if (!Number.isInteger(parsed)) {
+    return DEFAULT_TOKEN_TTL_SECONDS
+  }
+
+  if (parsed < MIN_TOKEN_TTL_SECONDS || parsed > MAX_TOKEN_TTL_SECONDS) {
     return DEFAULT_TOKEN_TTL_SECONDS
   }
 
   return parsed
 }
 
-const TOKEN_TTL_SECONDS = resolveTokenTtlSeconds()
-
 /**
- * Resolve the Stellar network this deployment is bound to. OAuth tokens carry
- * a `net` claim so a token minted against one network cannot be replayed
- * against another (testnet→mainnet submission). `null` when undeclared.
+ * RFC 6749 §4.4 client_credentials token request.
+ * `client_id` is the UUID of the API key bound to the presented secret, so a
+ * non-UUID value can be rejected as `invalid_request` before any lookup.
  */
-export const getNetworkId = (): string | null => {
-  try {
-    return (
-      getEnv().STELLAR_NETWORK_PASSPHRASE ??
-      getEnv().SOROBAN_NETWORK_PASSPHRASE ??
-      null
-    )
-  } catch {
-    return (
-      process.env.STELLAR_NETWORK_PASSPHRASE ??
-      process.env.SOROBAN_NETWORK_PASSPHRASE ??
-      null
-    )
-  }
-}
-
-const NETWORK_ID = getNetworkId()
-
-const MAX_SCOPES_PER_REQUEST = 20
-const MAX_SCOPE_LENGTH = 64
-
-const oauthJson = requireJson({ maxBytes: 16384 })
-
-/** RFC 6749 §2.3.1 / §4.4.1 token-request payload boundary. */
 export const oauthTokenRequestSchema = z.object({
   grant_type: z.literal('client_credentials'),
-  client_id: z.string().uuid('client_id must be a valid UUID.'),
-  client_secret: z
-    .string()
-    .min(1, 'client_secret is required.')
-    .max(1024, 'client_secret exceeds the maximum permitted length.'),
-  scope: z
-    .string()
-    .trim()
-    .max(256, 'scope exceeds the maximum permitted length.')
-    .optional(),
+  client_id: z.string().trim().uuid('client_id must be a UUID.'),
+  client_secret: z.string().min(1, 'client_secret is required.').max(512),
+  scope: z.string().max(MAX_REQUESTED_SCOPE_CHARS).optional(),
 })
+
+const oauthJson = requireJson({ maxBytes: 16384 })
 
 /**
  * Retrieve the JWT secret from validated configuration.
@@ -139,8 +115,7 @@ const oauthError = (res: Response, status: number, error: string, description: s
 }
 
 oauthRouter.post('/token', oauthJson, authRateLimiter, async (req: Request, res: Response): Promise<void> => {
-  const body: unknown = req.body
-  const rawBody = (body ?? {}) as Record<string, unknown>
+  const rawBody = (req.body ?? {}) as Record<string, unknown>
 
   // RFC 6749 §5.2 — an unsupported/missing grant_type is reported distinctly.
   if (rawBody.grant_type !== 'client_credentials') {
@@ -148,7 +123,7 @@ oauthRouter.post('/token', oauthJson, authRateLimiter, async (req: Request, res:
     return
   }
 
-  const parsed = oauthTokenRequestSchema.safeParse(body)
+  const parsed = oauthTokenRequestSchema.safeParse(rawBody)
   if (!parsed.success) {
     auditLog({
       actor_user_id: String(rawBody.client_id ?? 'unknown'),
@@ -194,18 +169,23 @@ oauthRouter.post('/token', oauthJson, authRateLimiter, async (req: Request, res:
   }
 
   const clientScopes: ApiScope[] = result.context.scopes
+  const requestedScopes = typeof scope === 'string'
+    ? (Array.from(
+        new Set(
+          scope
+            .split(/\s+/)
+            .map((entry) => entry.trim())
+            .filter(Boolean),
+        ),
+      ) as ApiScope[])
+    : []
+
+  // RFC 6749 §4.4.3: an omitted/blank `scope` means "all scopes the client was
+  // granted", so a whitespace-only value must not collapse to an empty grant.
   let grantedScopes: ApiScope[]
 
-  if (scope !== undefined) {
-    if (typeof scope !== 'string' || scope.length > MAX_SCOPES_PER_REQUEST * MAX_SCOPE_LENGTH) {
-      oauthError(res, 400, 'invalid_scope', 'Requested scope is too long')
-      return
-    }
-
-    const requested = String(scope)
-      .split(' ')
-      .map((s) => s.trim())
-      .filter(Boolean) as ApiScope[]
+  if (requestedScopes.length > 0) {
+    const requested = requestedScopes
 
     if (requested.length > MAX_SCOPES_PER_REQUEST) {
       auditLog({
@@ -276,6 +256,8 @@ oauthRouter.post('/token', oauthJson, authRateLimiter, async (req: Request, res:
   }
 
   const now = Math.floor(Date.now() / 1000)
+  const ttlSeconds = resolveTokenTtlSeconds()
+  const networkId = getNetworkId()
   const payload = {
     sub: canonicalClientId,
     client_id: canonicalClientId,
@@ -286,8 +268,8 @@ oauthRouter.post('/token', oauthJson, authRateLimiter, async (req: Request, res:
     iss: 'disciplr',
     aud: 'disciplr-api',
     iat: now,
-    exp: now + TOKEN_TTL_SECONDS,
-    ...(NETWORK_ID && { net: NETWORK_ID }),
+    exp: now + ttlSeconds,
+    ...(networkId && { net: networkId }),
   }
 
   const accessToken = jwt.sign(payload, jwtSecret)
@@ -300,9 +282,9 @@ oauthRouter.post('/token', oauthJson, authRateLimiter, async (req: Request, res:
     metadata: {
       grant_type: 'client_credentials',
       scopes: grantedScopes,
-      expires_in: TOKEN_TTL_SECONDS,
+      expires_in: ttlSeconds,
       ...(result.context.orgId && { org_id: result.context.orgId }),
-      ...(NETWORK_ID && { net: NETWORK_ID }),
+      ...(networkId && { net: networkId }),
     },
   })
 
@@ -313,7 +295,7 @@ oauthRouter.post('/token', oauthJson, authRateLimiter, async (req: Request, res:
     .json({
       access_token: accessToken,
       token_type: 'Bearer',
-      expires_in: TOKEN_TTL_SECONDS,
+      expires_in: ttlSeconds,
       scope: grantedScopes.join(' '),
     })
 })
