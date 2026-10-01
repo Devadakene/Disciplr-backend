@@ -10,7 +10,6 @@ import { requireJson } from '../middleware/requireJson.js'
 import { AUTH_JSON_MAX_BYTES } from '../middleware/requestBodyLimits.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { prisma } from '../lib/prisma.js'
-import type { Prisma } from '@prisma/client'
 import { UserRole } from '../types/user.js'
 import { requestTelemetry } from '../middleware/telemetry.js'
 import { authRateLimiter } from '../middleware/rateLimiter.js'
@@ -89,7 +88,7 @@ authRouter.post('/register', authJson, authRateLimiter, async (req, res, next) =
     }
 
     try {
-        const user = AuthService.register(result.data)
+        const user = await AuthService.register(result.data)
         res.status(201).json(user)
     } catch (error) {
         const message = error instanceof Error ? error.message : 'Registration failed'
@@ -173,8 +172,13 @@ authRouter.post(
   "/logout",
   authJson,
   authenticate,
-  async (req: Request, res: Response) => {
-    const { refreshToken } = req.body;
+  async (req: Request, res: Response, next: NextFunction) => {
+    const result = logoutSchema.safeParse(req.body)
+    if (!result.success) {
+      return next(AppError.validation('Validation failed', result.error.format()))
+    }
+
+    const { refreshToken } = result.data;
     if (refreshToken) {
       try {
         await AuthService.logout(refreshToken);
@@ -211,10 +215,10 @@ authRouter.post('/webauthn/challenge', authenticate, async (req, res, next) => {
   res.status(200).json(challenge)
 })
 
-authRouter.post('/webauthn/assert', authenticate, async (req, res, next) => {
+authRouter.post('/webauthn/assert', authJson, authenticate, async (req, res, next) => {
   const { nonce, credentialId, publicKey } = req.body as { nonce?: string; credentialId?: string; publicKey?: string }
   if (!req.user?.userId || !nonce || !credentialId || !publicKey) {
-    return next(AppError.badRequest('Missing WebAuthn\" assertion data'))
+    return next(AppError.badRequest('Missing WebAuthn assertion data'))
   }
 
   // Strict boundary validation: nonce must be a UUID, credential material must
@@ -261,7 +265,7 @@ authRouter.post('/users/:id/role', requireJson, authenticate, requireStepUp(), a
   const targetUserId = paramsResult.data.id
   const nextRole = bodyResult.data.role
 
-  const outcome = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+  const outcome = await prisma.$transaction(async (tx: any) => {
     const existing = await tx.user.findUnique({
       where: { id: targetUserId },
       select: authUserSelect,

@@ -183,7 +183,7 @@ export const transitionMilestone = (
 
   if (!(to in LIFECYCLE_ORDER)) return { success: false, error: `Unknown lifecycle state: ${String(to)}` }
 
-  const from: MilestoneLifecycleState = lifecycleState[id] ?? 'submitted'
+  const from: MilestoneLifecycleState = lifecycleState[id] ?? 'created'
 
   // Submission is created by the vault workflow, not a verifier queue action.
   // Authorization begins when a verifier changes the submitted item.
